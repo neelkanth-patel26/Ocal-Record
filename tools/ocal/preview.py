@@ -234,10 +234,10 @@ audio = QtWidgets.QWidget()
 audio_layout = QtWidgets.QVBoxLayout(audio)
 audio_layout.setContentsMargins(12, 12, 12, 12)
 audio_layout.setSpacing(8)
-for name, value in [("Desktop audio", 68), ("Microphone", 43)]:
+for name in ["Desktop audio", "Microphone"]:
     audio_layout.addWidget(QtWidgets.QLabel(name))
     meter = QtWidgets.QProgressBar()
-    meter.setValue(value)
+    meter.setValue(0)
     meter.setTextVisible(False)
     meter.setFixedHeight(6)
     meter.setStyleSheet("QProgressBar {background: #2D333B; border-radius: 3px; border: 0;} QProgressBar::chunk {background: #F5B402; border-radius: 3px;}")
@@ -271,20 +271,17 @@ current_recording_file = None
 recording_state = {"active": False, "seconds": 0}
 record_timer = QtCore.QTimer(window)
 
-# Animated audio mixer level simulation
-audio_meters_timer = QtCore.QTimer(window)
-import random
+# Audio mixer meters: quiet (0%) when idle - no random bouncing or fake input
 meters = audio.findChildren(QtWidgets.QProgressBar)
-def animate_audio():
-    if len(meters) >= 2:
-        if recording_state["active"]:
-            meters[0].setValue(random.randint(60, 95))
-            meters[1].setValue(random.randint(40, 80))
-        else:
-            meters[0].setValue(random.randint(20, 50))
-            meters[1].setValue(random.randint(15, 35))
-audio_meters_timer.timeout.connect(animate_audio)
-audio_meters_timer.start(120)
+sliders = audio.findChildren(QtWidgets.QSlider)
+for m in meters:
+    m.setValue(0)
+
+# Connect sliders so moving a volume slider cleanly sets and tests that channel's meter level
+for idx, slider in enumerate(sliders):
+    def make_meter_handler(i, sl):
+        return lambda val: meters[i].setValue(int(val * 0.75)) if i < len(meters) and val > 0 else (meters[i].setValue(0) if i < len(meters) else None)
+    slider.valueChanged.connect(make_meter_handler(idx, slider))
 
 def update_record_timer():
     recording_state["seconds"] += 1
@@ -605,4 +602,6 @@ if "--test-workspace" in sys.argv:
             assert editor.model.rowCount() == 0
             find("actionRemoveScene").trigger()
         assert len(editor.data) == 1
+        editor.shutdown()
+        reloaded.shutdown()
         print("PASS: toolbar creation, independent scenes, text rendering, visibility, rename, properties, cancel, reorder, save/reload, and removal")

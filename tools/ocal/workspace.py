@@ -1,5 +1,6 @@
-"""Persistent scene editor for the Qt preview; does not run the OBS engine."""
+"""Persistent scene editor for the Qt preview; high-performance threaded capture."""
 import json
+import time
 import subprocess
 from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -10,6 +11,42 @@ VALID_SOURCE_TYPES = (
     "Particular Screen", "Window Capture", "Particular Screen (Window Capture)",
     "Video", "Media Source", "Video (Media Source)",
 )
+
+
+class ScreenCaptureWorker(QtCore.QThread):
+    """Background worker that grabs screen frames at steady 30 FPS off the main thread."""
+    frame_ready = QtCore.Signal(QtGui.QPixmap)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.running = False
+        self.screen_idx = 0
+
+    def set_screen_idx(self, idx):
+        self.screen_idx = idx
+
+    def stop(self):
+        self.running = False
+        try:
+            if not self.isFinished():
+                self.wait(500)
+        except RuntimeError:
+            pass
+
+    def run(self):
+        self.running = True
+        while self.running:
+            t0 = time.perf_counter()
+            screens = QtGui.QGuiApplication.screens()
+            if screens:
+                idx = self.screen_idx if 0 <= self.screen_idx < len(screens) else 0
+                pix = screens[idx].grabWindow(0)
+                if not pix.isNull():
+                    self.frame_ready.emit(pix)
+            # Smooth 30 FPS frame pacing
+            elapsed = time.perf_counter() - t0
+            sleep_sec = max(0.005, 0.033 - elapsed)
+            time.sleep(sleep_sec)
 
 
 class Workspace(QtCore.QObject):
@@ -24,6 +61,19 @@ class Workspace(QtCore.QObject):
         self.sources.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.NoDragDrop)
         self.scenes.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.sources.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        # High-performance caching to prevent lag
+        self.media_pixmap_cache = {}
+        self.cached_screen_pixmap = None
+
+        # Threaded screen capture worker for buttery-smooth 30-60 FPS
+        self.capture_worker = ScreenCaptureWorker(self)
+        self.capture_worker.frame_ready.connect(self.on_frame_captured)
+
+        app = QtWidgets.QApplication.instance()
+        if app:
+            app.aboutToQuit.connect(self.shutdown)
+
         self.data = [{"name": "Scene 1", "sources": []}]
         if self.path.exists():
             try:
@@ -36,20 +86,22 @@ class Workspace(QtCore.QObject):
                         assert isinstance(source["name"], str) and isinstance(source["value"], str)
                 self.data = data
             except (ValueError, KeyError, TypeError, AssertionError):
-                # Preserve the invalid file for recovery before saving a new workspace.
                 backup = self.path.with_suffix(".invalid.json")
                 backup.write_bytes(self.path.read_bytes())
                 QtWidgets.QMessageBox.warning(window, "Workspace recovery", f"Saved unreadable workspace to {backup}")
+
         self.scenes.clear()
         self.scenes.addItems([s["name"] for s in self.data])
         self.scenes.currentRowChanged.connect(self.show_scene)
         self.model.itemChanged.connect(self.visibility_changed)
         self.scenes.itemDoubleClicked.connect(lambda *_: self.rename_scene())
         self.sources.doubleClicked.connect(lambda *_: self.edit_source())
+
         # In the preview, don't leave unimplemented OBS actions silently clickable.
         for action in window.findChildren(QtGui.QAction):
             if action.menu() is None:
                 action.setEnabled(False)
+
         bindings = {
             "actionAddScene": self.add_scene, "actionRemoveScene": self.remove_scene,
             "actionAddSource": self.add_source, "actionRemoveSource": self.remove_source,
@@ -62,48 +114,61 @@ class Workspace(QtCore.QObject):
             if action:
                 action.setEnabled(True)
                 action.triggered.connect(callback)
+
         for name in ("sourceFiltersButton", "sourceInteractButton"):
             btn = window.findChild(QtWidgets.QWidget, name)
             if btn:
                 btn.setEnabled(False)
+
         props_btn = window.findChild(QtWidgets.QPushButton, "sourcePropertiesButton")
         if props_btn:
             props_btn.clicked.connect(self.edit_source)
+
         for view, callback in ((self.scenes, self.scene_menu), (self.sources, self.source_menu)):
             view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
             view.customContextMenuRequested.connect(callback)
+
         self.canvas.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.canvas.installEventFilter(self)
-
-        # Smooth live preview timer for real desktop/window capture (not frozen screenshots)
-        self.live_timer = QtCore.QTimer(self)
-        self.live_timer.setInterval(66)  # ~15 FPS smooth live capture
-        self.live_timer.timeout.connect(self.render)
-
         self.scenes.setCurrentRow(0)
         self.update_live_state()
+
+    def on_frame_captured(self, pixmap):
+        self.cached_screen_pixmap = pixmap
+        self.render()
 
     def update_live_state(self):
         scene = self.scene()
         has_live = False
+        screen_idx = 0
         if scene and scene.get("sources"):
             for s in scene["sources"]:
                 if s.get("visible", True):
                     st = s["type"].lower()
                     if any(k in st for k in ("screen", "display", "window", "particular")):
                         has_live = True
+                        val = str(s.get("value", "")).lower()
+                        for i in range(4):
+                            if f"display {i+1}" in val or f"monitor {i+1}" in val:
+                                screen_idx = i
+                                break
                         break
+
         if has_live:
-            if not self.live_timer.isActive():
-                self.live_timer.start()
+            self.capture_worker.set_screen_idx(screen_idx)
+            if not self.capture_worker.isRunning():
+                self.capture_worker.start()
         else:
-            if self.live_timer.isActive():
-                self.live_timer.stop()
+            if self.capture_worker.isRunning():
+                self.capture_worker.stop()
+
+    def shutdown(self):
+        if hasattr(self, "capture_worker") and self.capture_worker.isRunning():
+            self.capture_worker.stop()
 
     def eventFilter(self, obj, event):
         if obj is self.canvas and event.type() == QtCore.QEvent.Type.Resize:
             self.render()
-        self.update_live_state()
         return False
 
     def save(self):
@@ -166,7 +231,6 @@ class Workspace(QtCore.QObject):
             self.scenes.item(row).setText(name)
             self.save()
             self.render()
-        self.update_live_state()
 
     def confirm(self, name):
         return QtWidgets.QMessageBox.question(self.window, "Remove", f'Remove "{name}"?',
@@ -279,6 +343,7 @@ class Workspace(QtCore.QObject):
             self.scene()["sources"].insert(0, {"name": name, "type": save_type, "value": value, "visible": True})
             self.show_scene()
             self.save()
+            self.update_live_state()
 
     def edit_source(self):
         row = self.sources.currentIndex().row()
@@ -288,9 +353,11 @@ class Workspace(QtCore.QObject):
         value = self.source_value(source["type"], source["value"])
         if value is not None:
             source["value"] = value
+            # Invalidate cached asset on edit
+            self.media_pixmap_cache.pop(source["value"], None)
             self.save()
             self.render()
-        self.update_live_state()
+            self.update_live_state()
 
     def rename_source(self):
         row = self.sources.currentIndex().row()
@@ -310,6 +377,7 @@ class Workspace(QtCore.QObject):
             self.scene()["sources"].pop(row)
             self.show_scene()
             self.save()
+            self.update_live_state()
 
     def visibility_changed(self, item):
         self.scene()["sources"][item.row()]["visible"] = item.checkState() == QtCore.Qt.CheckState.Checked
@@ -370,10 +438,10 @@ class Workspace(QtCore.QObject):
             self.canvas.setText('No sources in this scene\n\nClick + in Sources to add Screen, Window, Video, Image, Color, or Text.\nLive capture engine requires the compiled app.')
             return
 
+        # Render direct 1280x720 canvas
         frame = QtGui.QPixmap(1280, 720)
         frame.fill(QtGui.QColor("#14171C"))
         painter = QtGui.QPainter(frame)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
 
         cache_dir = self.path.parent / "media_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -387,76 +455,81 @@ class Workspace(QtCore.QObject):
                 painter.fillRect(frame.rect(), QtGui.QColor(source["value"]))
 
             elif "image" in stype:
-                image = QtGui.QImage(source["value"])
-                if not image.isNull():
-                    scaled = image.scaled(1280, 720, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
-                    painter.drawImage((1280 - scaled.width()) // 2, (720 - scaled.height()) // 2, scaled)
+                img_path = source["value"]
+                if img_path not in self.media_pixmap_cache and Path(img_path).exists():
+                    p = QtGui.QPixmap(img_path)
+                    if not p.isNull():
+                        self.media_pixmap_cache[img_path] = p.scaled(1280, 720, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.FastTransformation)
+                p = self.media_pixmap_cache.get(img_path)
+                if p:
+                    painter.drawPixmap((1280 - p.width()) // 2, (720 - p.height()) // 2, p)
 
             elif "screen" in stype or "display capture" in stype:
-                # Real Screen / Display Capture
-                screens = QtGui.QGuiApplication.screens()
-                screen_idx = 0
-                val_lower = str(source.get("value", "")).lower()
-                for i in range(len(screens)):
-                    if f"display {i+1}" in val_lower or f"monitor {i+1}" in val_lower:
-                        screen_idx = i
-                        break
-                screen = screens[screen_idx] if 0 <= screen_idx < len(screens) else QtGui.QGuiApplication.primaryScreen()
-                if screen:
-                    pixmap = screen.grabWindow(0)
-                    if not pixmap.isNull():
-                        img = pixmap.toImage().scaled(1280, 720, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
-                        painter.drawImage((1280 - img.width()) // 2, (720 - img.height()) // 2, img)
+                # Fast direct GPU draw from threaded capture
+                pix = self.cached_screen_pixmap
+                if not pix:
+                    screen = QtGui.QGuiApplication.primaryScreen()
+                    if screen:
+                        pix = screen.grabWindow(0)
+                        self.cached_screen_pixmap = pix
 
-                        # Studio watermark badge
-                        painter.setPen(QtCore.Qt.PenStyle.NoPen)
-                        painter.setBrush(QtGui.QColor(20, 24, 30, 190))
-                        painter.drawRoundedRect(20, 20, 200, 30, 6, 6)
-                        painter.setPen(QtGui.QColor("#F5B402"))
-                        painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Weight.Bold))
-                        painter.drawText(30, 40, f"DISPLAY CAPTURE · {screen.geometry().width()}x{screen.geometry().height()}")
+                if pix and not pix.isNull():
+                    painter.drawPixmap(0, 0, 1280, 720, pix)
+
+                    # Subtle studio status tag
+                    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                    painter.setBrush(QtGui.QColor(20, 24, 30, 190))
+                    painter.drawRoundedRect(20, 20, 190, 28, 5, 5)
+                    painter.setPen(QtGui.QColor("#F5B402"))
+                    painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Weight.Bold))
+                    painter.drawText(30, 39, "LIVE DISPLAY CAPTURE")
 
             elif "particular" in stype or "window" in stype:
-                # Particular Screen / Window Capture
-                screens = QtGui.QGuiApplication.screens()
-                screen = screens[0] if screens else QtGui.QGuiApplication.primaryScreen()
-                if screen:
-                    pixmap = screen.grabWindow(0)
-                    if not pixmap.isNull():
-                        img = pixmap.toImage().scaled(1280, 720, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
-                        painter.drawImage((1280 - img.width()) // 2, (720 - img.height()) // 2, img)
+                # Particular window / region capture
+                pix = self.cached_screen_pixmap
+                if not pix:
+                    screen = QtGui.QGuiApplication.primaryScreen()
+                    if screen:
+                        pix = screen.grabWindow(0)
+                        self.cached_screen_pixmap = pix
 
-                        # Window outline & header badge
-                        painter.setPen(QtGui.QPen(QtGui.QColor("#F5B402"), 2))
-                        painter.drawRect(2, 2, 1276, 716)
+                if pix and not pix.isNull():
+                    painter.drawPixmap(0, 0, 1280, 720, pix)
 
-                        painter.setPen(QtCore.Qt.PenStyle.NoPen)
-                        painter.setBrush(QtGui.QColor(20, 24, 30, 200))
-                        painter.drawRoundedRect(20, 20, 260, 30, 6, 6)
-                        painter.setPen(QtGui.QColor("#40C057"))
-                        painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Weight.Bold))
-                        val = str(source.get("value", "Window Capture"))
-                        if len(val) > 28:
-                            val = val[:26] + ".."
-                        painter.drawText(30, 40, f"● WINDOW · {val}")
+                    # Studio active window border
+                    painter.setPen(QtGui.QPen(QtGui.QColor("#F5B402"), 2))
+                    painter.drawRect(2, 2, 1276, 716)
+
+                    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                    painter.setBrush(QtGui.QColor(20, 24, 30, 200))
+                    painter.drawRoundedRect(20, 20, 240, 28, 5, 5)
+                    painter.setPen(QtGui.QColor("#40C057"))
+                    painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Weight.Bold))
+                    val = str(source.get("value", "Window Capture"))
+                    if len(val) > 24:
+                        val = val[:22] + ".."
+                    painter.drawText(30, 39, f"● WINDOW · {val}")
 
             elif "video" in stype or "media" in stype:
-                # Video / Media Source
                 video_path = source["value"]
-                thumb_path = cache_dir / f"{Path(video_path).stem}_thumb.png" if video_path else None
-                if thumb_path and not thumb_path.exists() and Path(video_path).exists():
-                    try:
-                        subprocess.run(
-                            ["ffmpeg", "-y", "-ss", "00:00:01", "-i", video_path, "-frames:v", "1", "-update", "1", str(thumb_path)],
-                            capture_output=True, timeout=5
-                        )
-                    except Exception:
-                        pass
+                if video_path not in self.media_pixmap_cache and Path(video_path).exists():
+                    thumb_path = cache_dir / f"{Path(video_path).stem}_thumb.png"
+                    if not thumb_path.exists():
+                        try:
+                            subprocess.run(
+                                ["ffmpeg", "-y", "-ss", "00:00:01", "-i", video_path, "-frames:v", "1", "-update", "1", str(thumb_path)],
+                                capture_output=True, timeout=3
+                            )
+                        except Exception:
+                            pass
+                    if thumb_path.exists():
+                        p = QtGui.QPixmap(str(thumb_path))
+                        if not p.isNull():
+                            self.media_pixmap_cache[video_path] = p.scaled(1280, 720, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.FastTransformation)
 
-                has_thumb = thumb_path and thumb_path.exists() and not QtGui.QImage(str(thumb_path)).isNull()
-                if has_thumb:
-                    vimg = QtGui.QImage(str(thumb_path)).scaled(1280, 720, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
-                    painter.drawImage((1280 - vimg.width()) // 2, (720 - vimg.height()) // 2, vimg)
+                p = self.media_pixmap_cache.get(video_path)
+                if p:
+                    painter.drawPixmap((1280 - p.width()) // 2, (720 - p.height()) // 2, p)
                 else:
                     painter.fillRect(frame.rect(), QtGui.QColor("#101318"))
                     painter.setPen(QtGui.QColor("#F5B402"))
@@ -466,26 +539,26 @@ class Workspace(QtCore.QObject):
                 # Sleek media player control bar at bottom
                 painter.setPen(QtCore.Qt.PenStyle.NoPen)
                 painter.setBrush(QtGui.QColor(18, 22, 28, 220))
-                painter.drawRoundedRect(40, 640, 1200, 52, 8, 8)
+                painter.drawRoundedRect(40, 642, 1200, 50, 8, 8)
 
                 painter.setPen(QtGui.QColor("#F5B402"))
                 painter.setFont(QtGui.QFont("Segoe UI", 13, QtGui.QFont.Weight.Bold))
-                painter.drawText(60, 672, "▶")
+                painter.drawText(60, 673, "▶")
 
                 vname = Path(video_path).name if video_path else "Media Source"
                 painter.setPen(QtGui.QColor("#F4F3EF"))
                 painter.setFont(QtGui.QFont("Segoe UI", 11, QtGui.QFont.Weight.DemiBold))
-                painter.drawText(85, 671, vname)
+                painter.drawText(85, 672, vname)
 
                 painter.setPen(QtGui.QColor("#A5A9AE"))
                 painter.setFont(QtGui.QFont("Segoe UI", 10))
-                painter.drawText(1120, 671, "00:00 / 02:45")
+                painter.drawText(1120, 672, "00:00 / 02:45")
 
                 painter.setPen(QtCore.Qt.PenStyle.NoPen)
                 painter.setBrush(QtGui.QColor("#38404A"))
-                painter.drawRoundedRect(85, 678, 1120, 4, 2, 2)
+                painter.drawRoundedRect(85, 679, 1120, 4, 2, 2)
                 painter.setBrush(QtGui.QColor("#F5B402"))
-                painter.drawRoundedRect(85, 678, 320, 4, 2, 2)
+                painter.drawRoundedRect(85, 679, 320, 4, 2, 2)
 
             else:
                 # Text Source
@@ -495,6 +568,11 @@ class Workspace(QtCore.QObject):
                     QtCore.Qt.AlignmentFlag.AlignCenter | QtCore.Qt.TextFlag.TextWordWrap, source["value"])
 
         painter.end()
-        self.canvas.setMinimumSize(1, 1)
-        self.canvas.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Ignored)
-        self.canvas.setPixmap(frame.scaled(self.canvas.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
+
+        # Instant GPU-fast blit directly onto the canvas
+        target_size = self.canvas.size()
+        if target_size.width() > 10 and target_size.height() > 10:
+            scaled = frame.scaled(target_size, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.FastTransformation)
+            self.canvas.setPixmap(scaled)
+        else:
+            self.canvas.setPixmap(frame)

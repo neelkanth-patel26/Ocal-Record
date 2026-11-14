@@ -254,6 +254,8 @@ with tempfile.TemporaryDirectory() as temp_dir:
     persistence_ok = len(reloaded_ws.data) == len(ws.data) and len(reloaded_ws.data[0]["sources"]) == 6
     record_test("10. Workspace JSON Persistence", persistence_ok,
                 f"Workspace saved and cleanly reloaded ({len(reloaded_ws.data[0]['sources'])} sources intact)")
+    ws.shutdown()
+    reloaded_ws.shutdown()
 
 # -----------------------------------------------------------------
 # Final Report
