@@ -297,6 +297,18 @@ def update_record_timer():
     fname = current_recording_file.name if current_recording_file else "recording.mp4"
     window.statusBar().showMessage(f"● RECORDING  [{time_str}]  •  {fname}  •  1920 × 1080 / 30 FPS")
 
+def open_path_safe(target_path):
+    p_str = str(target_path)
+    try:
+        url = QtCore.QUrl.fromLocalFile(p_str)
+        if not QtGui.QDesktopServices.openUrl(url):
+            os.startfile(p_str)
+    except Exception:
+        try:
+            subprocess.Popen(["explorer.exe", p_str])
+        except Exception:
+            pass
+
 record_timer.timeout.connect(update_record_timer)
 
 def toggle_recording():
@@ -370,9 +382,9 @@ def toggle_recording():
                 box.addButton("Close", QtWidgets.QMessageBox.ButtonRole.RejectRole)
                 box.exec()
                 if box.clickedButton() == open_btn:
-                    os.startfile(str(recordings_dir))
+                    open_path_safe(recordings_dir)
                 elif box.clickedButton() == play_btn:
-                    os.startfile(str(current_recording_file))
+                    open_path_safe(current_recording_file)
         else:
             window.statusBar().showMessage("Ready")
 
@@ -382,7 +394,7 @@ record_btn.clicked.connect(toggle_recording)
 action_show_rec = window.findChild(QtGui.QAction, "actionShowRecordings")
 if action_show_rec:
     action_show_rec.setEnabled(True)
-    action_show_rec.triggered.connect(lambda: os.startfile(str(recordings_dir)))
+    action_show_rec.triggered.connect(lambda: open_path_safe(recordings_dir))
 
 def toggle_streaming():
     if stream_btn.text() == "Start Streaming":
