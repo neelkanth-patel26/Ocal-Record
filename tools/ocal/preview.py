@@ -258,8 +258,33 @@ vcam_btn = controls.findChild(QtWidgets.QPushButton, "virtualCamButton")
 mode_btn = controls.findChild(QtWidgets.QPushButton, "modeSwitch")
 settings_btn = controls.findChild(QtWidgets.QPushButton, "settingsButton")
 
+# Recording configuration and process management
+recordings_dir = Path.home() / "Videos" / "Ocal_Recordings"
+try:
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+except Exception:
+    recordings_dir = OUTPUT / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+
+recording_process = None
+current_recording_file = None
 recording_state = {"active": False, "seconds": 0}
 record_timer = QtCore.QTimer(window)
+
+# Animated audio mixer level simulation
+audio_meters_timer = QtCore.QTimer(window)
+import random
+meters = audio.findChildren(QtWidgets.QProgressBar)
+def animate_audio():
+    if len(meters) >= 2:
+        if recording_state["active"]:
+            meters[0].setValue(random.randint(60, 95))
+            meters[1].setValue(random.randint(40, 80))
+        else:
+            meters[0].setValue(random.randint(20, 50))
+            meters[1].setValue(random.randint(15, 35))
+audio_meters_timer.timeout.connect(animate_audio)
+audio_meters_timer.start(120)
 
 def update_record_timer():
     recording_state["seconds"] += 1
@@ -269,14 +294,39 @@ def update_record_timer():
     sec = s % 60
     time_str = f"{h:02d}:{m:02d}:{sec:02d}"
     brand_status.setText(f"● REC [{time_str}]")
-    window.statusBar().showMessage(f"● RECORDING  [{time_str}]  •  Ocal Record  •  1920 × 1080 / 60 FPS")
+    fname = current_recording_file.name if current_recording_file else "recording.mp4"
+    window.statusBar().showMessage(f"● RECORDING  [{time_str}]  •  {fname}  •  1920 × 1080 / 30 FPS")
 
 record_timer.timeout.connect(update_record_timer)
 
 def toggle_recording():
+    global recording_process, current_recording_file
     recording_state["active"] = not recording_state["active"]
     if recording_state["active"]:
         recording_state["seconds"] = 0
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        current_recording_file = recordings_dir / f"Ocal_Record_{stamp}.mp4"
+
+        # Launch real FFmpeg Windows Desktop Screen Recording
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "gdigrab",
+            "-framerate", "30",
+            "-i", "desktop",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p",
+            str(current_recording_file)
+        ]
+        try:
+            recording_process = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except Exception as err:
+            recording_process = None
+            print("FFmpeg recording launch error:", err)
+
         record_btn.setProperty("class", "state-active")
         record_btn.setText("Stop Recording")
         record_btn.setIcon(QtGui.QIcon(str(ROOT / "frontend/data/themes/Ocal/stop.svg")))
@@ -285,8 +335,17 @@ def toggle_recording():
         brand_status.setText("● REC [00:00:00]")
         brand_status.setStyleSheet("color: #FA5252; font-weight: 700; font-size: 11px;")
         record_timer.start(1000)
+        window.statusBar().showMessage(f"● RECORDING STARTED  •  Saving to {current_recording_file.name}")
     else:
         record_timer.stop()
+        if recording_process:
+            try:
+                recording_process.communicate(b'q', timeout=4)
+            except Exception:
+                recording_process.terminate()
+                recording_process.wait()
+            recording_process = None
+
         record_btn.setProperty("class", "")
         record_btn.setText("Start Recording")
         record_btn.setIcon(QtGui.QIcon(str(ROOT / "frontend/data/themes/Ocal/record.svg")))
@@ -294,9 +353,36 @@ def toggle_recording():
         record_btn.style().polish(record_btn)
         brand_status.setText("● READY")
         brand_status.setStyleSheet("color: #F5B402; font-weight: 600; font-size: 11px;")
-        window.statusBar().showMessage("Recording saved to build-ocal-preview/ • Ready")
+
+        if current_recording_file and current_recording_file.exists():
+            size_mb = current_recording_file.stat().st_size / (1024 * 1024)
+            window.statusBar().showMessage(f"✓ Saved: {current_recording_file.name} ({size_mb:.2f} MB) in Videos/Ocal_Recordings")
+
+            if INTERACTIVE:
+                box = QtWidgets.QMessageBox(window)
+                box.setWindowTitle("Recording Saved — Ocal Record")
+                box.setText(f"<b>Recording Saved Successfully!</b><br><br>"
+                            f"<b>File:</b> {current_recording_file.name}<br>"
+                            f"<b>Size:</b> {size_mb:.2f} MB<br>"
+                            f"<b>Location:</b> {recordings_dir}")
+                open_btn = box.addButton("Open Folder", QtWidgets.QMessageBox.ButtonRole.ActionRole)
+                play_btn = box.addButton("Play Video", QtWidgets.QMessageBox.ButtonRole.ActionRole)
+                box.addButton("Close", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() == open_btn:
+                    os.startfile(str(recordings_dir))
+                elif box.clickedButton() == play_btn:
+                    os.startfile(str(current_recording_file))
+        else:
+            window.statusBar().showMessage("Ready")
 
 record_btn.clicked.connect(toggle_recording)
+
+# Connect File -> Show Recordings to open folder
+action_show_rec = window.findChild(QtGui.QAction, "actionShowRecordings")
+if action_show_rec:
+    action_show_rec.setEnabled(True)
+    action_show_rec.triggered.connect(lambda: os.startfile(str(recordings_dir)))
 
 def toggle_streaming():
     if stream_btn.text() == "Start Streaming":

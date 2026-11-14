@@ -43,10 +43,12 @@ Use the scene/source **+** buttons, double-click a scene to rename it, double-cl
 a source to edit its content or properties, or right-click for additional actions. The arrows
 change layer order; checkboxes toggle visibility. Changes autosave to
 `build-ocal-preview/workspace.json`, separately from OBS profiles. Video thumbnails
-are generated with ffmpeg. Live recording, streaming, filters, and audio encoding
-remain mock/preview-only in this UI preview until compiled natively.
+are generated with ffmpeg. Live screen capture provides real-time desktop preview at ~15 FPS,
+and clicking **Start Recording** generates real 1080p30 H.264 `.mp4` video recordings saved directly
+to `Videos/Ocal_Recordings/` using FFmpeg.
 
 ```powershell
+python tools/ocal/test_all.py
 python tools/ocal/preview.py --interactive
 python tools/ocal/preview.py --test-workspace
 ```

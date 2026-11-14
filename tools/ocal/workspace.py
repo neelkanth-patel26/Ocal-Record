@@ -74,11 +74,36 @@ class Workspace(QtCore.QObject):
             view.customContextMenuRequested.connect(callback)
         self.canvas.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.canvas.installEventFilter(self)
+
+        # Smooth live preview timer for real desktop/window capture (not frozen screenshots)
+        self.live_timer = QtCore.QTimer(self)
+        self.live_timer.setInterval(66)  # ~15 FPS smooth live capture
+        self.live_timer.timeout.connect(self.render)
+
         self.scenes.setCurrentRow(0)
+        self.update_live_state()
+
+    def update_live_state(self):
+        scene = self.scene()
+        has_live = False
+        if scene and scene.get("sources"):
+            for s in scene["sources"]:
+                if s.get("visible", True):
+                    st = s["type"].lower()
+                    if any(k in st for k in ("screen", "display", "window", "particular")):
+                        has_live = True
+                        break
+        if has_live:
+            if not self.live_timer.isActive():
+                self.live_timer.start()
+        else:
+            if self.live_timer.isActive():
+                self.live_timer.stop()
 
     def eventFilter(self, obj, event):
         if obj is self.canvas and event.type() == QtCore.QEvent.Type.Resize:
             self.render()
+        self.update_live_state()
         return False
 
     def save(self):
@@ -110,6 +135,7 @@ class Workspace(QtCore.QObject):
         if self.model.rowCount():
             self.sources.setCurrentIndex(self.model.index(0, 0))
         self.render()
+        self.update_live_state()
 
     def name(self, title, initial, existing):
         value, ok = QtWidgets.QInputDialog.getText(self.window, title, "Name:", text=initial)
@@ -140,6 +166,7 @@ class Workspace(QtCore.QObject):
             self.scenes.item(row).setText(name)
             self.save()
             self.render()
+        self.update_live_state()
 
     def confirm(self, name):
         return QtWidgets.QMessageBox.question(self.window, "Remove", f'Remove "{name}"?',
@@ -263,6 +290,7 @@ class Workspace(QtCore.QObject):
             source["value"] = value
             self.save()
             self.render()
+        self.update_live_state()
 
     def rename_source(self):
         row = self.sources.currentIndex().row()
@@ -287,6 +315,7 @@ class Workspace(QtCore.QObject):
         self.scene()["sources"][item.row()]["visible"] = item.checkState() == QtCore.Qt.CheckState.Checked
         self.save()
         self.render()
+        self.update_live_state()
 
     def move_scene(self, delta):
         row = self.scenes.currentRow()
