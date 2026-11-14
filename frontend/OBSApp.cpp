@@ -962,6 +962,7 @@ OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
 	  appLaunchUUID_(QUuid::createUuid())
 {
 	installNativeEventFilter(new OBS::NativeEventFilter);
+	setApplicationDisplayName(QStringLiteral("Ocal Record"));
 
 	/* fix float handling */
 #if defined(Q_OS_UNIX)
@@ -1002,7 +1003,7 @@ OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
 	sleepInhibitor = os_inhibit_sleep_create("OBS Video/audio");
 
 #ifndef __APPLE__
-	setWindowIcon(QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
+	setWindowIcon(QIcon(":/res/images/ocal-record.svg"));
 #endif
 
 	setDesktopFileName("com.obsproject.Studio");
@@ -1405,7 +1406,8 @@ bool OBSApp::IsPortableMode()
 
 bool OBSApp::IsUpdaterDisabled()
 {
-	return opt_disable_updater;
+	/* Upstream updates/repair would replace this fork with stock OBS Studio. */
+	return true;
 }
 
 bool OBSApp::IsMissingFilesCheckDisabled()

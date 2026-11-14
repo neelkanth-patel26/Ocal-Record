@@ -32,6 +32,11 @@
 !COPYING
 !INSTALL
 !README.rst
+!README-OCAL.md
+!/tools
+build-ocal-preview/
+__pycache__/
+*.py[cod]
 
 # Exclude lock files
 *.lock.json

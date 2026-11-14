@@ -241,8 +241,8 @@ void VolumeControl::obsSourceDestroy(void *data, calldata_t *)
 void VolumeControl::setLayoutVertical(bool vertical)
 {
 	QBoxLayout *newLayout = new QBoxLayout(QBoxLayout::TopToBottom);
-	newLayout->setContentsMargins(0, 0, 0, 0);
-	newLayout->setSpacing(0);
+	newLayout->setContentsMargins(10, 8, 10, 8);
+	newLayout->setSpacing(6);
 
 	if (vertical) {
 		setMaximumWidth(110);
@@ -290,7 +290,7 @@ void VolumeControl::setLayoutVertical(bool vertical)
 		controlLayout->addWidget(monitorButton);
 
 		meterLayout->setContentsMargins(0, 0, 0, 0);
-		meterLayout->setSpacing(0);
+		meterLayout->setSpacing(6);
 		meterLayout->addWidget(slider);
 		meterLayout->addWidget(volumeMeter);
 
@@ -351,7 +351,7 @@ void VolumeControl::setLayoutVertical(bool vertical)
 		meterFrame->setLayout(meterLayout);
 
 		meterLayout->setContentsMargins(0, 0, 0, 0);
-		meterLayout->setSpacing(0);
+		meterLayout->setSpacing(6);
 
 		meterLayout->addWidget(slider);
 		meterLayout->addWidget(volumeMeter);

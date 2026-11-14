@@ -2,12 +2,24 @@
 #include "OBSBasic.hpp"
 #include "qt-wrappers.hpp"
 
+#include <QLabel>
+
 #include "moc_OBSBasicControls.cpp"
 
 OBSBasicControls::OBSBasicControls(OBSBasic *main) : QFrame(nullptr), ui(new Ui::OBSBasicControls)
 {
 	/* Create UI elements */
 	ui->setupUi(this);
+
+	/* Put the primary recording action first without changing its signal wiring. */
+	auto recordingItem = ui->buttonsVLayout->takeAt(ui->buttonsVLayout->indexOf(ui->recordingLayout));
+	ui->buttonsVLayout->insertItem(0, recordingItem);
+	auto brand = new QLabel(QStringLiteral("Ocal Record"), this);
+	brand->setObjectName(QStringLiteral("ocalBrand"));
+	ui->buttonsVLayout->insertWidget(0, brand);
+	QWidget::setTabOrder(ui->recordButton, ui->pauseRecordButton);
+	QWidget::setTabOrder(ui->pauseRecordButton, ui->streamButton);
+	QWidget::setTabOrder(ui->streamButton, ui->broadcastButton);
 
 	streamButtonMenu.reset(new QMenu());
 	startStreamAction = streamButtonMenu->addAction(QTStr("Basic.Main.StartStreaming"));

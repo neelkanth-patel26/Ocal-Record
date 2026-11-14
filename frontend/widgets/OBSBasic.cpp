@@ -137,6 +137,13 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	api = InitializeAPIInterface(this);
 
 	ui->setupUi(this);
+	/* Hide inactive preview scrollbars; restore them when a zoomed canvas can pan. */
+	for (auto scrollbar : {ui->previewXScrollBar, ui->previewYScrollBar}) {
+		scrollbar->setVisible(scrollbar->maximum() > scrollbar->minimum());
+		connect(scrollbar, &QScrollBar::rangeChanged, this,
+			[scrollbar](int minimum, int maximum) { scrollbar->setVisible(maximum > minimum); });
+	}
+
 	ui->previewDisabledWidget->setVisible(false);
 
 	/* Set up streaming connections */
@@ -238,13 +245,14 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	/* Main window default layout */
 	setDockCornersVertical(true);
 
-	/* Scenes and Sources dock on left
-	 * This specific arrangement can't be set up in Qt Designer */
-	addDockWidget(Qt::LeftDockWidgetArea, ui->scenesDock);
-	splitDockWidget(ui->scenesDock, ui->sourcesDock, Qt::Vertical);
-	int sideDockWidth = std::min(width() * 30 / 100, 320);
-	resizeDocks({ui->scenesDock, ui->sourcesDock}, {sideDockWidth, sideDockWidth}, Qt::Horizontal);
-	addDockWidget(Qt::BottomDockWidgetArea, controlsDock);
+	/* A wide preview above a scene/source/audio workspace, with capture on the right. */
+	addDockWidget(Qt::BottomDockWidgetArea, ui->scenesDock);
+	splitDockWidget(ui->scenesDock, ui->sourcesDock, Qt::Horizontal);
+	splitDockWidget(ui->sourcesDock, ui->mixerDock, Qt::Horizontal);
+	resizeDocks({ui->scenesDock, ui->sourcesDock, ui->mixerDock}, {220, 260, 440}, Qt::Horizontal);
+	addDockWidget(Qt::RightDockWidgetArea, controlsDock);
+	addDockWidget(Qt::RightDockWidgetArea, ui->transitionsDock);
+	splitDockWidget(controlsDock, ui->transitionsDock, Qt::Vertical);
 
 	startingDockLayout = saveState();
 
@@ -1982,7 +1990,7 @@ void OBSBasic::UpdateTitleBar()
 	const char *profile = config_get_string(App()->GetUserConfig(), "Basic", "Profile");
 	const char *sceneCollection = config_get_string(App()->GetUserConfig(), "Basic", "SceneCollection");
 
-	name << "OBS ";
+	name << "Ocal Record ";
 	if (previewProgramMode) {
 		name << "Studio ";
 	}

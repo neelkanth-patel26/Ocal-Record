@@ -80,7 +80,7 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	int cx = width();
 	int bottomDocksHeight = height();
 
-	bottomDocksHeight = bottomDocksHeight * 225 / 1000;
+	bottomDocksHeight = bottomDocksHeight * 30 / 100;
 
 	ui->scenesDock->setVisible(true);
 	ui->sourcesDock->setVisible(true);
@@ -90,13 +90,14 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	statsDock->setVisible(false);
 	statsDock->setFloating(true);
 
-	QList<QDockWidget *> bottomDocks{ui->mixerDock, ui->transitionsDock, controlsDock};
+	resizeDocks({ui->scenesDock, ui->sourcesDock, ui->mixerDock},
+		    {bottomDocksHeight, bottomDocksHeight, bottomDocksHeight}, Qt::Vertical);
+	resizeDocks({controlsDock, ui->transitionsDock}, {cx * 22 / 100, cx * 22 / 100}, Qt::Horizontal);
+	resizeDocks({controlsDock, ui->transitionsDock}, {height() * 65 / 100, height() * 20 / 100},
+		    Qt::Vertical);
 
-	resizeDocks(bottomDocks, {bottomDocksHeight, bottomDocksHeight, bottomDocksHeight}, Qt::Vertical);
-	resizeDocks(bottomDocks, {cx * 45 / 100, cx * 14 / 100, cx * 16 / 100}, Qt::Horizontal);
-
-	int sideDockWidth = std::min(width() * 30 / 100, 280);
-	resizeDocks({ui->scenesDock, ui->sourcesDock}, {sideDockWidth, sideDockWidth}, Qt::Horizontal);
+	resizeDocks({ui->scenesDock, ui->sourcesDock, ui->mixerDock},
+		    {cx * 20 / 100, cx * 24 / 100, cx * 34 / 100}, Qt::Horizontal);
 
 	activateWindow();
 }
